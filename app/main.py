@@ -10,6 +10,7 @@ openapi.yaml for the contract and DATA_MODEL.md for what is stored in MongoDB.
 """
 import os
 import re
+from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -67,24 +68,45 @@ def compute_late_minutes(
     return 0
 
 
+def as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def compute_work_hours(punch_in: datetime, punch_out: datetime) -> float:
+    seconds = (as_utc(punch_out) - as_utc(punch_in)).total_seconds()
+    hours = Decimal(str(seconds)) / Decimal("3600")
+    return float(hours.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def compute_overtime(
+    punch_out: datetime,
+    shift_start: str,
+    shift_end: str,
+    date_str: str,
+) -> int:
+    shift_day = datetime.strptime(date_str, "%Y-%m-%d").date()
+    end_time = datetime.strptime(shift_end, "%H:%M").time()
+    shift_end_local = datetime.combine(shift_day, end_time, tzinfo=IST)
+
+    if shift_end <= shift_start:
+        shift_end_local += timedelta(days=1)
+
+    elapsed_seconds = (
+        punch_out.astimezone(IST) - shift_end_local
+    ).total_seconds()
+
+    if elapsed_seconds < 1800:
+        return 0
+
+    return int(elapsed_seconds // 60)
+
+
 def to_epoch_ms(value: Optional[datetime]) -> Optional[int]:
     if value is None:
         return None
-
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-
-    return int(value.timestamp() * 1000)
-def compute_work_hours(punch_in: datetime, punch_out: datetime) -> float:
-    return round((punch_out - punch_in).total_seconds() / 3600, 2)
-
-
-def compute_overtime(punch_out: datetime, shift_end: str, date_str: str) -> int:
-    h, m = map(int, shift_end.split(":"))
-    end = datetime.fromisoformat(date_str).replace(hour=h, minute=m, tzinfo=IST)
-    return max(0, int((punch_out - end).total_seconds() / 60))
-
-
+    return int(as_utc(value).timestamp() * 1000)
 # --------------------------------------------------------------------------- #
 # Models
 # --------------------------------------------------------------------------- #
@@ -102,6 +124,11 @@ class PunchInIn(BaseModel):
     emp_code: str
     punched_at: Optional[int] = None
     status: str = "PRESENT"
+
+
+class PunchOutIn(BaseModel):
+    emp_code: str
+    punched_at: Optional[int] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -314,6 +341,101 @@ def punch_in(body: PunchInIn):
     doc["punch_in"] = to_epoch_ms(doc["punch_in"])
     doc["punch_out"] = to_epoch_ms(doc["punch_out"])
     return doc
+@app.post("/attendance/punch-out")
+def punch_out(body: PunchOutIn):
+    emp = db.employees.find_one({"emp_code": body.emp_code})
+    if emp is None:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    if body.punched_at is None:
+        ts = datetime.now(timezone.utc).replace(microsecond=0)
+    else:
+        if body.punched_at <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail="punched_at must be a positive epoch-millisecond timestamp",
+            )
+        try:
+            ts = datetime.fromtimestamp(
+                body.punched_at / 1000,
+                tz=timezone.utc,
+            ).replace(microsecond=0)
+        except (ValueError, OSError, OverflowError):
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid punched_at timestamp",
+            )
+
+    record = db.attendance_logs.find_one(
+        {
+            "emp_code": body.emp_code,
+            "punch_in": {"$lte": ts},
+        },
+        sort=[("punch_in", DESCENDING)],
+    )
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No punch-in found before the requested punch-out time",
+        )
+
+    if record.get("punch_out") is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Attendance record is already punched out",
+        )
+
+    punch_in_time = as_utc(record["punch_in"])
+    if ts <= punch_in_time:
+        raise HTTPException(
+            status_code=422,
+            detail="punch-out must be after punch-in",
+        )
+
+    if (ts - punch_in_time).total_seconds() > 86400:
+        raise HTTPException(
+            status_code=422,
+            detail="punch-out cannot be more than 24 hours after punch-in",
+        )
+
+    work_hours = compute_work_hours(punch_in_time, ts)
+    overtime_minutes = compute_overtime(
+        ts,
+        emp["shift_start"],
+        emp["shift_end"],
+        record["date"],
+    )
+    half_day = work_hours < 4.50
+
+    result = db.attendance_logs.update_one(
+        {"_id": record["_id"], "punch_out": None},
+        {
+            "$set": {
+                "punch_out": ts,
+                "work_hours": work_hours,
+                "overtime_minutes": overtime_minutes,
+                "half_day": half_day,
+            }
+        },
+    )
+
+    if result.modified_count != 1:
+        raise HTTPException(
+            status_code=409,
+            detail="Attendance record was updated by another request",
+        )
+
+    record["punch_out"] = ts
+    record["work_hours"] = work_hours
+    record["overtime_minutes"] = overtime_minutes
+    record["half_day"] = half_day
+    record.pop("_id", None)
+    record["punch_in"] = to_epoch_ms(record.get("punch_in"))
+    record["punch_out"] = to_epoch_ms(record.get("punch_out"))
+    return record
+
+
 @app.get("/attendance")
 def list_attendance(
     emp_code: Optional[str] = None,
@@ -353,6 +475,10 @@ def list_attendance(
 #   GET   /analytics/departments/{department}/trend
 #   GET   /admin/explain/{endpoint}
 # --------------------------------------------------------------------------- #
+
+
+
+
 
 
 
