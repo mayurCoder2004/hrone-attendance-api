@@ -798,3 +798,152 @@ def regularize_attendance(
 
     return record
 
+
+
+def round_half_up(value, places=2):
+    quantum = Decimal("1").scaleb(-places)
+    return float(Decimal(str(value)).quantize(quantum, rounding=ROUND_HALF_UP))
+
+
+@app.get("/analytics/employees/{emp_code}/monthly")
+def employee_monthly(emp_code: str, month: str):
+    # Validate YYYY-MM strictly.
+    try:
+        month_start = datetime.strptime(month, "%Y-%m").date()
+        if month_start.strftime("%Y-%m") != month:
+            raise ValueError("Invalid month")
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail="month must use YYYY-MM format",
+        )
+
+    employee = db.employees.find_one(
+        {"emp_code": emp_code},
+        {"_id": 0, "emp_code": 1, "joined_on": 1},
+    )
+    if employee is None:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    try:
+        joined_on = datetime.strptime(employee["joined_on"], "%Y-%m-%d").date()
+    except (KeyError, ValueError):
+        raise HTTPException(status_code=500, detail="Employee has invalid joined_on data")
+
+    next_month = (
+        month_start.replace(day=28) + timedelta(days=4)
+    ).replace(day=1)
+    month_end = next_month - timedelta(days=1)
+
+    effective_start = max(month_start, joined_on)
+    working_days = 0
+    current_day = effective_start
+    while current_day <= month_end:
+        if current_day.weekday() < 5:
+            working_days += 1
+        current_day += timedelta(days=1)
+
+    pipeline = [
+        {
+            "$match": {
+                "emp_code": emp_code,
+                "date": {
+                    "$gte": month_start.isoformat(),
+                    "$lte": month_end.isoformat(),
+                },
+            }
+        },
+        {
+            "$group": {
+                "_id": None,
+                "present_days": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {"$in": ["$status", ["PRESENT", "WFH", "ON_DUTY"]]},
+                                    {
+                                        "$lt": [
+                                            {
+                                                "$dayOfWeek": {
+                                                    "$dateFromString": {
+                                                        "dateString": "$date",
+                                                        "format": "%Y-%m-%d",
+                                                        "timezone": "UTC",
+                                                    }
+                                                }
+                                            },
+                                            7,
+                                        ]
+                                    },
+                                    {
+                                        "$gt": [
+                                            {
+                                                "$dayOfWeek": {
+                                                    "$dateFromString": {
+                                                        "dateString": "$date",
+                                                        "format": "%Y-%m-%d",
+                                                        "timezone": "UTC",
+                                                    }
+                                                }
+                                            },
+                                            1,
+                                        ]
+                                    },
+                                ]
+                            },
+                            {
+                                "$cond": [
+                                    {"$eq": [{"$ifNull": ["$half_day", False]}, True]},
+                                    0.5,
+                                    1,
+                                ]
+                            },
+                            0,
+                        ]
+                    }
+                },
+                "leave_days": {
+                    "$sum": {"$cond": [{"$eq": ["$status", "LEAVE"]}, 1, 0]}
+                },
+                "late_count": {
+                    "$sum": {
+                        "$cond": [
+                            {"$gt": [{"$ifNull": ["$late_minutes", 0]}, 0]},
+                            1,
+                            0,
+                        ]
+                    }
+                },
+                "total_late_minutes": {
+                    "$sum": {"$ifNull": ["$late_minutes", 0]}
+                },
+                "total_overtime_minutes": {
+                    "$sum": {"$ifNull": ["$overtime_minutes", 0]}
+                },
+            }
+        },
+    ]
+
+    results = list(db.attendance_logs.aggregate(pipeline))
+    totals = results[0] if results else {}
+
+    present_days = float(totals.get("present_days", 0))
+    attendance_pct = (
+        round_half_up(present_days / working_days * 100, 4)
+        if working_days > 0
+        else None
+    )
+
+    return {
+        "emp_code": emp_code,
+        "month": month,
+        "working_days": working_days,
+        "present_days": present_days,
+        "leave_days": totals.get("leave_days", 0),
+        "late_count": totals.get("late_count", 0),
+        "total_late_minutes": totals.get("total_late_minutes", 0),
+        "total_overtime_minutes": totals.get("total_overtime_minutes", 0),
+        "attendance_pct": attendance_pct,
+    }
+
