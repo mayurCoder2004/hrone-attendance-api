@@ -32,13 +32,49 @@ app = FastAPI(title="Employee Attendance & Analytics API", version="2.0.0")
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
-def compute_late_minutes(punch_in: datetime, shift_start: str) -> int:
-    h, m = map(int, shift_start.split(":"))
-    start = punch_in.replace(hour=h, minute=m, second=0, microsecond=0)
-    minutes = int((punch_in - start).total_seconds() / 60)
-    return minutes if minutes > 10 else 0
+def attendance_date_for_punch(
+    punch_in: datetime,
+    shift_start: str,
+    shift_end: str,
+) -> str:
+    local_punch = punch_in.astimezone(IST)
+    attendance_day = local_punch.date()
+
+    if (
+        shift_end <= shift_start
+        and local_punch.strftime("%H:%M") < shift_end
+    ):
+        attendance_day -= timedelta(days=1)
+
+    return attendance_day.isoformat()
 
 
+def compute_late_minutes(
+    punch_in: datetime,
+    shift_start: str,
+    attendance_date: str,
+) -> int:
+    shift_day = datetime.strptime(attendance_date, "%Y-%m-%d").date()
+    shift_time = datetime.strptime(shift_start, "%H:%M").time()
+    shift_start_local = datetime.combine(shift_day, shift_time, tzinfo=IST)
+    punch_local = punch_in.astimezone(IST)
+
+    elapsed_seconds = (punch_local - shift_start_local).total_seconds()
+
+    if elapsed_seconds > 600:
+        return int(elapsed_seconds // 60)
+
+    return 0
+
+
+def to_epoch_ms(value: Optional[datetime]) -> Optional[int]:
+    if value is None:
+        return None
+
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+
+    return int(value.timestamp() * 1000)
 def compute_work_hours(punch_in: datetime, punch_out: datetime) -> float:
     return round((punch_out - punch_in).total_seconds() / 3600, 2)
 
@@ -212,29 +248,72 @@ def list_employees(
     }
 @app.post("/attendance/punch-in", status_code=201)
 def punch_in(body: PunchInIn):
+    allowed_statuses = {"PRESENT", "WFH", "ON_DUTY"}
+
+    if body.status not in allowed_statuses:
+        raise HTTPException(
+            status_code=422,
+            detail="status must be PRESENT, WFH, or ON_DUTY",
+        )
+
     emp = db.employees.find_one({"emp_code": body.emp_code})
-    ts = datetime.fromtimestamp(body.punched_at / 1000) if body.punched_at else datetime.now()
-    d = ts.date().isoformat()
-    if db.attendance_logs.find_one({"emp_code": body.emp_code, "date": d}):
-        raise HTTPException(409, "already punched in for this date")
+    if emp is None:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    if body.punched_at is None:
+        ts = datetime.now(timezone.utc).replace(microsecond=0)
+    else:
+        if body.punched_at <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail="punched_at must be a positive epoch-millisecond timestamp",
+            )
+        try:
+            ts = datetime.fromtimestamp(
+                body.punched_at / 1000,
+                tz=timezone.utc,
+            ).replace(microsecond=0)
+        except (ValueError, OSError, OverflowError):
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid punched_at timestamp",
+            )
+
+    attendance_date = attendance_date_for_punch(
+        ts,
+        emp["shift_start"],
+        emp["shift_end"],
+    )
+
     doc = {
         "emp_code": body.emp_code,
-        "date": d,
+        "date": attendance_date,
         "status": body.status,
         "punch_in": ts,
         "punch_out": None,
         "work_hours": None,
-        "late_minutes": compute_late_minutes(ts, emp["shift_start"]),
+        "late_minutes": compute_late_minutes(
+            ts,
+            emp["shift_start"],
+            attendance_date,
+        ),
         "overtime_minutes": 0,
         "half_day": False,
         "history": [],
     }
-    res = db.attendance_logs.insert_one(doc)
-    doc["id"] = str(res.inserted_id)
+
+    try:
+        db.attendance_logs.insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(
+            status_code=409,
+            detail="already punched in for this attendance date",
+        )
+
     doc.pop("_id", None)
+    doc["punch_in"] = to_epoch_ms(doc["punch_in"])
+    doc["punch_out"] = to_epoch_ms(doc["punch_out"])
     return doc
-
-
 @app.get("/attendance")
 def list_attendance(
     emp_code: Optional[str] = None,
@@ -274,6 +353,8 @@ def list_attendance(
 #   GET   /analytics/departments/{department}/trend
 #   GET   /admin/explain/{endpoint}
 # --------------------------------------------------------------------------- #
+
+
 
 
 
