@@ -1,4 +1,4 @@
-"""
+﻿"""
 Employee Attendance & Analytics API - STARTER
 
 Run:  uvicorn app.main:app --port 8000
@@ -86,16 +86,47 @@ def create_employee(body: EmployeeIn):
 
 
 @app.get("/employees")
-def list_employees(department: Optional[str] = None, page: int = 1, page_size: int = 20):
-    q = {}
-    if department:
-        q["department"] = department
-    skip = page * page_size
-    total = db.employees.count_documents({})
-    items = list(db.employees.find(q, {"_id": 0}).skip(skip).limit(page_size))
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+def list_employees(
+    department: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+):
+    if page < 1:
+        raise HTTPException(status_code=422, detail="page must be at least 1")
 
+    if page_size < 1 or page_size > 100:
+        raise HTTPException(
+            status_code=422,
+            detail="page_size must be between 1 and 100",
+        )
 
+    query = {}
+    if department is not None:
+        query["department"] = department
+
+    skip = (page - 1) * page_size
+    total = db.employees.count_documents(query)
+
+    items = list(
+        db.employees.find(query, {"_id": 0})
+        .sort("emp_code", 1)
+        .skip(skip)
+        .limit(page_size)
+    )
+
+    for employee in items:
+        created_at = employee.get("created_at")
+        if isinstance(created_at, datetime):
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            employee["created_at"] = int(created_at.timestamp() * 1000)
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 @app.post("/attendance/punch-in", status_code=201)
 def punch_in(body: PunchInIn):
     emp = db.employees.find_one({"emp_code": body.emp_code})
@@ -160,3 +191,4 @@ def list_attendance(
 #   GET   /analytics/departments/{department}/trend
 #   GET   /admin/explain/{endpoint}
 # --------------------------------------------------------------------------- #
+
