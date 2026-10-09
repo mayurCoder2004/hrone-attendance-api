@@ -947,3 +947,159 @@ def employee_monthly(emp_code: str, month: str):
         "attendance_pct": attendance_pct,
     }
 
+@app.get("/analytics/departments/summary")
+def department_summary(month: str):
+    try:
+        month_start = datetime.strptime(month, "%Y-%m").date()
+        if month_start.strftime("%Y-%m") != month:
+            raise ValueError("Invalid month")
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail="month must use YYYY-MM format",
+        )
+
+    next_month = (
+        month_start.replace(day=28) + timedelta(days=4)
+    ).replace(day=1)
+    month_end = next_month - timedelta(days=1)
+
+    # Include only employees who had joined by the reporting period end.
+    employees = list(
+        db.employees.find(
+            {"joined_on": {"$lte": month_end.isoformat()}},
+            {"_id": 0, "emp_code": 1, "department": 1, "joined_on": 1},
+        ).sort("emp_code", ASCENDING)
+    )
+
+    if not employees:
+        return {"month": month, "departments": []}
+
+    # Aggregate attendance in MongoDB; do not fetch individual logs for Python loops.
+    pipeline = [
+        {
+            "$match": {
+                "date": {
+                    "$gte": month_start.isoformat(),
+                    "$lte": month_end.isoformat(),
+                }
+            }
+        },
+        {
+            "$addFields": {
+                "_date": {
+                    "$dateFromString": {
+                        "dateString": "$date",
+                        "format": "%Y-%m-%d",
+                        "timezone": "UTC",
+                    }
+                }
+            }
+        },
+        {
+            "$group": {
+                "_id": "$emp_code",
+                "record_count": {"$sum": 1},
+                "present_days": {
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {"$in": ["$status", ["PRESENT", "WFH", "ON_DUTY"]]},
+                                    {"$gt": [{"$dayOfWeek": "$_date"}, 1]},
+                                    {"$lt": [{"$dayOfWeek": "$_date"}, 7]},
+                                ]
+                            },
+                            {
+                                "$cond": [
+                                    {"$eq": [{"$ifNull": ["$half_day", False]}, True]},
+                                    0.5,
+                                    1,
+                                ]
+                            },
+                            0,
+                        ]
+                    }
+                },
+                "leave_days": {
+                    "$sum": {"$cond": [{"$eq": ["$status", "LEAVE"]}, 1, 0]}
+                },
+                "late_count": {
+                    "$sum": {
+                        "$cond": [
+                            {"$gt": [{"$ifNull": ["$late_minutes", 0]}, 0]},
+                            1,
+                            0,
+                        ]
+                    }
+                },
+                "total_late_minutes": {
+                    "$sum": {"$ifNull": ["$late_minutes", 0]}
+                },
+                "total_overtime_minutes": {
+                    "$sum": {"$ifNull": ["$overtime_minutes", 0]}
+                },
+                "work_hours_sum": {
+                    "$sum": {"$ifNull": ["$work_hours", 0]}
+                },
+                "work_hours_count": {
+                    "$sum": {
+                        "$cond": [
+                            {"$ne": [{"$ifNull": ["$work_hours", None]}, None]},
+                            1,
+                            0,
+                        ]
+                    }
+                },
+            }
+        },
+    ]
+
+    attendance_by_employee = {
+        item["_id"]: item
+        for item in db.attendance_logs.aggregate(pipeline)
+    }
+
+    # Employees with no logs contribute to headcount and zero attendance totals.
+    departments = {}
+    for employee in employees:
+        department = employee.get("department", "Unknown")
+        emp_code = employee["emp_code"]
+        totals = attendance_by_employee.get(emp_code, {})
+
+        summary = departments.setdefault(
+            department,
+            {
+                "department": department,
+                "headcount": 0,
+                "present_days": 0.0,
+                "leave_days": 0,
+                "late_count": 0,
+                "total_late_minutes": 0,
+                "total_overtime_minutes": 0,
+                "work_hours_sum": 0.0,
+                "work_hours_count": 0,
+            },
+        )
+
+        summary["headcount"] += 1
+        summary["present_days"] += float(totals.get("present_days", 0))
+        summary["leave_days"] += totals.get("leave_days", 0)
+        summary["late_count"] += totals.get("late_count", 0)
+        summary["total_late_minutes"] += totals.get("total_late_minutes", 0)
+        summary["total_overtime_minutes"] += totals.get("total_overtime_minutes", 0)
+        summary["work_hours_sum"] += totals.get("work_hours_sum", 0)
+        summary["work_hours_count"] += totals.get("work_hours_count", 0)
+
+    output = []
+    for department in sorted(departments):
+        summary = departments[department]
+        count = summary.pop("work_hours_count")
+        work_hours_sum = summary.pop("work_hours_sum")
+        summary["avg_work_hours"] = (
+            round_half_up(work_hours_sum / count, 2) if count else 0.0
+        )
+        summary["present_days"] = round_half_up(summary["present_days"], 2)
+        output.append(summary)
+
+    return {"month": month, "departments": output}
