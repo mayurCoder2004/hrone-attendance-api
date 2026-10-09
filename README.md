@@ -1,40 +1,64 @@
 # HROne Employee Attendance & Analytics API
 
-FastAPI service for the HROne Software Engineer Trainee assignment. The API manages employees, records attendance punches, supports HR attendance regularization, returns attendance analytics, and exposes MongoDB query-plan inspection for key list and analytics operations.
-
-The implementation uses Python, FastAPI, PyMongo, and MongoDB. MongoDB stores employees in `employees` and attendance records in `attendance_logs`; API timestamps are epoch milliseconds while attendance dates are IST `YYYY-MM-DD` strings.
+A FastAPI backend for the HROne Software Engineer Trainee assignment. It manages employee records, attendance punch-in and punch-out, HR regularization, attendance analytics, and MongoDB query-plan inspection.
 
 ## Features
 
-- Employee creation and paginated employee listing, with optional department filtering.
-- Punch-in and punch-out flows for `PRESENT`, `WFH`, and `ON_DUTY` attendance.
-- Attendance listing with employee, date-range, status, and pagination filters.
-- Attendance regularization with validation, derived-field recomputation, and history entries.
-- Monthly employee analytics.
-- Department summary analytics.
-- Late-arrival leaderboard with ranking and optional department filter.
-- Department attendance trend with daily rows and 7-day moving average.
-- MongoDB `explain` output with `executionStats` for supported endpoint queries.
-- Input validation, HTTP error handling, and startup-created MongoDB indexes.
+- Create employees and list them with pagination and optional department filtering.
+- Record punch-in and punch-out for `PRESENT`, `WFH`, and `ON_DUTY` attendance.
+- Filter attendance records by employee, date range, status, and pagination.
+- Regularize attendance records with validation and audit history.
+- Calculate monthly employee attendance analytics.
+- Summarize attendance by department.
+- Produce a late-arrival leaderboard with optional department filtering.
+- Return daily department trends and a 7-day moving average.
+- Inspect supported query plans using MongoDB `explain` with `executionStats`.
+- Create MongoDB indexes at application startup.
+
+## Technology stack
+
+- Python 3.12
+- FastAPI and Uvicorn
+- PyMongo
+- MongoDB (local instance or Atlas)
+- Pydantic and python-dotenv
+
+Install the dependencies listed in `requirements.txt`.
 
 ## Prerequisites
 
-- Python 3.12 recommended for this repository. The assignment contract accepts Python 3.11+.
-- MongoDB 6.0 or newer. The assignment grader uses MongoDB 7.0.
-- A local MongoDB instance or MongoDB Atlas connection.
-- Dependencies from `requirements.txt`: FastAPI, Uvicorn, PyMongo, Pydantic, and python-dotenv.
+- Python 3.12 installed and available through the Windows `py` launcher.
+- Access to a MongoDB instance.
+- Windows PowerShell for the commands in this guide.
 
-## Local Setup
+## Local setup (Windows PowerShell)
 
-Run these commands from the repository root in Windows PowerShell.
+Run the commands from the repository root.
 
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-There is no `.env.example` in this checkout. Create a local `.env` with non-secret local values, or set real environment variables before starting the app. Real environment variables take priority over `.env`. Do not commit `.env`.
+If PowerShell blocks virtual-environment activation, allow it for the current PowerShell process and activate again:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+```
+
+## Environment configuration
+
+The application loads environment variables from `.env` and reads:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MONGO_URI` | `mongodb://localhost:27017` | MongoDB connection string. |
+| `MONGO_DB` | `attendance_db` | Database name. |
+
+For a local MongoDB instance, you can create a `.env` file with:
 
 ```powershell
 @'
@@ -43,84 +67,100 @@ MONGO_DB=attendance_db
 '@ | Set-Content -Encoding UTF8 .env
 ```
 
-For a local MongoDB Windows service:
+For MongoDB Atlas, set `MONGO_URI` to your Atlas connection string and `MONGO_DB` to the database name you intend to use. Keep credentials out of source control and documentation. Do not commit `.env`.
+
+## Database setup and sample data
+
+Start your local MongoDB service if you use one:
 
 ```powershell
 Start-Service MongoDB
 ```
 
-For MongoDB Atlas, set `MONGO_URI` to your Atlas connection string and `MONGO_DB` to the target database. Keep credentials out of git and do not paste real credentials into documentation.
+The command above applies only if MongoDB is installed as a Windows service. For Atlas, ensure your connection string, network access, and database credentials are configured.
 
-`sample_seed.py` loads the nine sample documents from `sample_data/`, but it first clears the `employees` and `attendance_logs` collections. Use it only against a disposable local/dev database.
+**Warning:** `sample_seed.py` clears the `employees` and `attendance_logs` collections before inserting sample data. Run it only against a disposable local or development database, never against production or shared data.
+
+To load the sample data:
 
 ```powershell
 python .\sample_seed.py
 ```
 
-Start the API:
+The sample data contains six employees and nine attendance records.
+
+## Run the API
 
 ```powershell
 uvicorn app.main:app --port 8000 --reload
 ```
 
-Swagger UI is available at `http://127.0.0.1:8000/docs`. The generated OpenAPI JSON is available at `http://127.0.0.1:8000/openapi.json`.
+The application creates its MongoDB indexes on startup.
 
-## API Reference
+- Swagger UI: <http://127.0.0.1:8000/docs>
+- OpenAPI JSON: <http://127.0.0.1:8000/openapi.json>
+- OpenAPI specification in the repository: `openapi.yaml`
 
-Pagination uses `page` starting at `1` and `page_size` defaulting to `20` with a maximum of `100` where implemented. Dates use `YYYY-MM-DD`, months use `YYYY-MM`, shift times use IST `HH:MM`, and request/response instants use epoch milliseconds.
+## API reference
+
+Dates use `YYYY-MM-DD`, months use `YYYY-MM`, shift times use 24-hour `HH:MM`, and request/response instants use epoch milliseconds. Where pagination is supported, `page` starts at `1`, `page_size` defaults to `20`, and the maximum page size is `100`.
 
 ### Health
 
-| Method | Route | Purpose | Important parameters |
-|---|---|---|---|
-| `GET` | `/health` | Check API readiness and MongoDB connectivity. | None |
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/health` | Pings MongoDB and returns `{"status":"ok"}` when available. Returns `503` if MongoDB is unavailable. |
 
 ### Employees
 
-| Method | Route | Purpose | Important parameters |
-|---|---|---|---|
-| `POST` | `/employees` | Create an employee. | Body: `emp_code`, `name`, `email`, `department`, `joined_on`; optional `shift_start`, `shift_end`. |
-| `GET` | `/employees` | List employees sorted by `emp_code`. | Query: `department`, `page`, `page_size`. |
+| Method | Route | Description |
+|---|---|---|
+| `POST` | `/employees` | Creates an employee. Required fields: `emp_code`, `name`, `email`, `department`, and `joined_on`. `shift_start` and `shift_end` default to `09:30` and `18:30`. |
+| `GET` | `/employees` | Lists employees sorted by `emp_code` ascending. Supports `department`, `page`, and `page_size` query parameters. |
+
+Employee codes must match `EMP` followed by 4 to 6 digits.
 
 ### Attendance
 
-| Method | Route | Purpose | Important parameters |
-|---|---|---|---|
-| `POST` | `/attendance/punch-in` | Create the employee's attendance record for the derived attendance date. | Body: `emp_code`; optional `punched_at`, `status`. |
-| `POST` | `/attendance/punch-out` | Close the latest open attendance record at or before the punch-out time. | Body: `emp_code`; optional `punched_at`. |
-| `GET` | `/attendance` | List attendance records sorted by `date` descending and `emp_code` ascending. | Query: `emp_code`, `date_from`, `date_to`, `status`, `page`, `page_size`. |
-| `PATCH` | `/attendance/{emp_code}/{date}` | Regularize one attendance record and append audit history. | Path: `emp_code`, `date`; body: `reason`, `regularized_by`; optional `status`, `punch_in`, `punch_out`. |
+| Method | Route | Description |
+|---|---|---|
+| `POST` | `/attendance/punch-in` | Records an employee's punch-in. Body fields include `emp_code`, optional `punched_at`, and optional `status`. |
+| `POST` | `/attendance/punch-out` | Closes the latest eligible open attendance record. Body fields include `emp_code` and optional `punched_at`. |
+| `GET` | `/attendance` | Lists attendance records. Supports `emp_code`, `date_from`, `date_to`, `status`, `page`, and `page_size`. |
+| `PATCH` | `/attendance/{emp_code}/{date}` | Regularizes a record. Requires `reason` and `regularized_by`; optional fields are `status`, `punch_in`, and `punch_out`. |
 
-Attendance statuses are `PRESENT`, `WFH`, `ON_DUTY`, `ABSENT`, and `LEAVE`. Punch-in accepts only `PRESENT`, `WFH`, or `ON_DUTY`.
+Attendance statuses are `PRESENT`, `WFH`, `ON_DUTY`, `ABSENT`, and `LEAVE`. Punch-in accepts only `PRESENT`, `WFH`, and `ON_DUTY`.
 
 ### Analytics
 
-| Method | Route | Purpose | Important parameters |
-|---|---|---|---|
-| `GET` | `/analytics/employees/{emp_code}/monthly` | Monthly attendance summary for one employee. | Path: `emp_code`; query: `month`. |
-| `GET` | `/analytics/departments/summary` | Department summary for a month. | Query: `month`, optional exact-match `department`. |
-| `GET` | `/analytics/leaderboard/late` | Late-arrival leaderboard for a month. | Query: `month`, optional `limit` default `10`, optional `department`. |
-| `GET` | `/analytics/departments/{department}/trend` | Daily department trend for an inclusive date range. | Path: `department`; query: `from`, `to`. |
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/analytics/employees/{emp_code}/monthly?month=YYYY-MM` | Monthly attendance summary for an employee. |
+| `GET` | `/analytics/departments/summary?month=YYYY-MM` | Department summary for a month. An optional `department` query parameter filters the results. |
+| `GET` | `/analytics/leaderboard/late?month=YYYY-MM` | Late-arrival leaderboard. Supports `limit` (default `10`, range `1`–`50`) and optional `department`. |
+| `GET` | `/analytics/departments/{department}/trend?from=YYYY-MM-DD&to=YYYY-MM-DD` | Daily department trend for an inclusive date range of at most 92 days. |
 
-The department trend range is limited to 92 days. Unknown departments return `404` for the trend endpoint.
+The monthly employee endpoint requires an existing employee. The department trend endpoint returns `404` for an unknown department.
 
-### Admin Explain
+### Admin explain
 
-| Method | Route | Purpose | Important parameters |
-|---|---|---|---|
-| `GET` | `/admin/explain/{endpoint}` | Return raw MongoDB `explain` output with `executionStats`. | Path `endpoint`: `attendance_list`, `employee_monthly`, `department_summary`, `late_leaderboard`, `department_trend`. |
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/admin/explain/{endpoint}` | Returns MongoDB `explain` output with `executionStats` for a supported operation. |
 
-The explain endpoint accepts the relevant query parameters for the endpoint being explained, including `emp_code`, `month`, `department`, `limit`, `date_from`, `date_to`, `status`, `from`, `to`, `page`, and `page_size`. For `employee_monthly`, `department_summary`, and `late_leaderboard`, `month` is required; for `employee_monthly`, `emp_code` is also required; for `department_trend`, `department`, `from`, and `to` are required.
+Supported endpoint identifiers are `attendance_list`, `employee_monthly`, `department_summary`, `late_leaderboard`, and `department_trend`. The explain endpoint accepts the parameters required by the selected operation, such as `emp_code`, `month`, `department`, `limit`, date filters, and pagination.
 
-## Example Requests
+## Request examples
+
+Run these examples while the API is running. Use employee codes and dates that exist in your database where an existing employee or attendance record is required.
+
+### Health check
 
 ```powershell
 curl.exe "http://127.0.0.1:8000/health"
 ```
 
-```powershell
-curl.exe "http://127.0.0.1:8000/employees?page=1&page_size=10&department=Engineering"
-```
+### Create an employee
 
 ```powershell
 curl.exe -X POST "http://127.0.0.1:8000/employees" `
@@ -128,65 +168,149 @@ curl.exe -X POST "http://127.0.0.1:8000/employees" `
   -d '{"emp_code":"EMP9001","name":"Nisha Verma","email":"nisha.verma@example.test","department":"Engineering","shift_start":"09:30","shift_end":"18:30","joined_on":"2026-07-01"}'
 ```
 
+Use a new employee code when running this example; employee codes must be unique.
+
+### List employees
+
+```powershell
+curl.exe "http://127.0.0.1:8000/employees?page=1&page_size=10&department=Engineering"
+```
+
+### Punch in and punch out
+
+The following timestamps are illustrative epoch-millisecond values. For reliable testing, use valid timestamps appropriate to the attendance date and employee shift.
+
 ```powershell
 curl.exe -X POST "http://127.0.0.1:8000/attendance/punch-in" `
   -H "Content-Type: application/json" `
-  -d '{"emp_code":"EMP9001","punched_at":1783312500000,"status":"PRESENT"}'
+  -d '{"emp_code":"EMP9001","punched_at":1783310400000,"status":"PRESENT"}'
 ```
+
+```powershell
+curl.exe -X POST "http://127.0.0.1:8000/attendance/punch-out" `
+  -H "Content-Type: application/json" `
+  -d '{"emp_code":"EMP9001","punched_at":1783343100000}'
+```
+
+### List attendance
 
 ```powershell
 curl.exe "http://127.0.0.1:8000/attendance?emp_code=EMP9001&date_from=2026-07-01&date_to=2026-07-31&page=1&page_size=20"
 ```
 
-```powershell
-curl.exe "http://127.0.0.1:8000/analytics/employees/EMP9001/monthly?month=2026-07"
-```
+### Regularize attendance
+
+Use a record that already exists for the employee and date.
 
 ```powershell
-curl.exe "http://127.0.0.1:8000/analytics/departments/summary?month=2026-07&department=Engineering"
+curl.exe -X PATCH "http://127.0.0.1:8000/attendance/EMP9001/2026-07-06" `
+  -H "Content-Type: application/json" `
+  -d '{"status":"WFH","reason":"Approved remote work correction","regularized_by":"hr.admin"}'
 ```
+
+### Analytics
+
+```powershell
+curl.exe "http://127.0.0.1:8000/analytics/employees/EMP9001/monthly?month=2026-07"
+curl.exe "http://127.0.0.1:8000/analytics/departments/summary?month=2026-07&department=Engineering"
+curl.exe "http://127.0.0.1:8000/analytics/leaderboard/late?month=2026-07&limit=10"
+curl.exe "http://127.0.0.1:8000/analytics/departments/Engineering/trend?from=2026-07-01&to=2026-07-07"
+```
+
+### Explain an endpoint query
 
 ```powershell
 curl.exe "http://127.0.0.1:8000/admin/explain/attendance_list?date_from=2026-07-01&date_to=2026-07-31&page=1&page_size=20"
 ```
 
-## Business Rules and Design
+## Business rules and calculations
 
-- Attendance dates and shift times are handled in IST. Overnight shifts assign early-morning punches before `shift_end` to the previous attendance date.
-- Late arrival uses a 10-minute grace period. A punch more than 10 minutes after shift start records whole elapsed minutes from shift start.
-- Overtime is whole minutes after shift end and counts only when at least 30 minutes.
-- Work hours are rounded to 2 decimals using half-up rounding. Half day is set when rounded work hours are below `4.50`.
-- `PRESENT`, `WFH`, and `ON_DUTY` count as present; `ABSENT` and `LEAVE` do not.
-- Working days are Monday through Friday with no holiday calendar. Monthly working days start from the employee's `joined_on`.
-- Unique MongoDB indexes enforce unique `emp_code` values and one attendance record per `(emp_code, date)`, which supports concurrent duplicate create and punch-in conflict handling.
-- Regularization uses a concurrency filter and appends one history entry for actual changes.
-- Analytics use MongoDB aggregation pipelines and stored derived attendance fields. The department summary aggregation starts from eligible employees and looks up attendance logs, so employees with no logs still contribute to headcount.
-- Department headcount includes employees whose `joined_on` is on or before the reporting period end.
-- Startup creates indexes for employee code, department/employee listing, eligible employee matching, attendance uniqueness, date/employee listing, and status/date filtering.
+- Attendance dates and shift times are handled in IST.
+- Overnight shifts are supported. If `shift_end <= shift_start`, early-morning punches before `shift_end` are assigned to the previous attendance date.
+- Late arrival has a 10-minute grace period. A punch more than 10 minutes after shift start records whole elapsed minutes from shift start.
+- Work hours are calculated from punch-in to punch-out and rounded to two decimal places using half-up rounding.
+- Overtime is measured in whole minutes after shift end and counts only when the overtime duration is at least 30 minutes.
+- `half_day` is `true` when rounded `work_hours` is below `4.50`.
+- `PRESENT`, `WFH`, and `ON_DUTY` count as presence statuses; `ABSENT` and `LEAVE` do not.
+- Working days are Monday through Friday. There is no holiday calendar.
+- Monthly employee analytics starts from the later of the month start and the employee's `joined_on` date.
+- Department summary headcount includes employees who joined on or before the reporting month end. Department trend headcount is calculated for each day.
+- The late leaderboard uses MongoDB `$rank`; tied employees share a rank.
 
-## Validation and Errors
+## Validation and HTTP errors
 
-Errors use FastAPI-style JSON bodies with a `detail` field.
+Selected validation rules include:
 
-- `404` is returned for missing employees, missing attendance records, no eligible punch-in for punch-out, and unknown departments in trend analytics.
-- `409` is returned for duplicate employee codes, duplicate punch-ins for the same attendance date, already closed attendance records, and concurrent update conflicts.
-- `422` is returned for invalid request bodies, invalid date/month formats, invalid statuses, invalid pagination, invalid timestamp values, and regularization requests that do not change the record.
-- `503` is returned by `/health` when MongoDB is unavailable and by regularization if the database update fails.
+- Employee code must match `EMP` followed by 4 to 6 digits.
+- Name, email, and department cannot be blank; email must match the implemented email pattern.
+- Shift times must use valid 24-hour `HH:MM` values and cannot be equal.
+- Date fields must use valid `YYYY-MM-DD` dates; month fields must use `YYYY-MM`.
+- Pagination requires `page >= 1` and `1 <= page_size <= 100`.
+- Punch-in status must be `PRESENT`, `WFH`, or `ON_DUTY`.
+- Regularization requires a reason and the regularizer's identifier. The trimmed reason must contain at least five characters.
+- Punch-out must be after punch-in and no more than 24 hours after it.
+- Regularization rejects no-op changes. Setting `ABSENT` or `LEAVE` rejects supplied punch times; presence statuses require `punch_in`.
 
-No automated test suite is present in this repository. Use the API examples, Swagger UI, and any additional local checks against disposable data.
+Common HTTP statuses:
 
-## Repository Documentation
+| Status | Meaning |
+|---|---|
+| `404` | Employee or attendance record not found, no eligible punch-in for punch-out, or unknown department for trend analytics. |
+| `409` | Duplicate employee code, duplicate attendance record, already closed record, or concurrent update conflict. |
+| `422` | Invalid request data, date/month, status, pagination, timestamp, range, or no-op regularization. |
+| `503` | MongoDB unavailable for `/health`, or a regularization database update failure. |
 
-- `REVIEW.md` lists defects found in the starter implementation, symptoms or tests that expose them, and the applied fixes.
-- `DECISIONS.md` summarizes index choices, concurrency handling, leaderboard tie behavior, headcount handling, and scaling considerations.
+Errors use JSON responses with a `detail` field.
 
-## Limitations
+## Database indexes and design decisions
 
-- This checkout does not include `.env.example`, so local environment setup is documented with a minimal local `.env` template.
-- `sample_seed.py` is destructive for the two assignment collections and should not be run against shared or production-like data.
-- `punch-in` and `punch-out` validate `punched_at` as a positive integer timestamp, while regularization applies the stricter OpenAPI epoch-millisecond range.
-- No automated tests were found in the repository during README inspection.
+Indexes are created in `app/main.py` at application startup.
 
-## Submission and Security
+| Collection | Index | Purpose |
+|---|---|---|
+| `employees` | `uq_employees_emp_code` — unique `emp_code` | Enforces unique employee codes. |
+| `employees` | `ix_employees_department_emp_code` — `department`, `emp_code` | Supports department-filtered employee listing. |
+| `employees` | `ix_employees_joined_on_department` — `joined_on`, `department` | Supports employee eligibility and headcount queries. |
+| `attendance_logs` | `uq_attendance_emp_code_date` — unique `emp_code`, `date` | Enforces one attendance record per employee per date. |
+| `attendance_logs` | `ix_attendance_date_emp_code` — `date` descending, `emp_code` | Supports attendance date sorting and filtering. |
+| `attendance_logs` | `ix_attendance_status_date` — `status`, `date` descending | Supports status/date filtering. |
 
-Do not commit `.env`, credentials, virtual environments, cache folders, database dumps, or generated private data. The assignment explicitly excludes adding a Dockerfile. Preserve the repository visibility and confidentiality requirements from the assignment, and keep the full problem statement out of this README.
+Important implementation choices:
+
+- Unique indexes enforce employee-code and employee/date uniqueness.
+- Punch-out updates an eligible open attendance record and detects conflicts.
+- Regularization applies a concurrency filter and appends history for actual changes.
+- Analytics use MongoDB aggregation pipelines and stored derived attendance fields.
+- `REVIEW.md` records starter defects and fixes; `DECISIONS.md` describes index choices, concurrency handling, leaderboard ties, headcount, and scaling considerations.
+
+## Automated API smoke tests
+
+If `test_api.py` is present in your local checkout, it can be run as a script-style smoke/integration test. Start the API in one terminal:
+
+```powershell
+uvicorn app.main:app --port 8000 --reload
+```
+
+In a second terminal, activate the virtual environment and run:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python test_api.py
+```
+
+The script uses the database configured by `.env` and may create temporary test records. Do not run it against production data. Review the script's output and cleanup messages. Smoke tests are not exhaustive coverage of every concurrency case, analytics edge case, date boundary, or malformed payload.
+
+## Known limitations
+
+- There is no authentication or authorization layer.
+- There is no holiday calendar; weekdays Monday through Friday are treated as working days.
+- Punch-in and punch-out validate `punched_at` as a positive integer timestamp, while regularization applies a stricter timestamp range.
+- The smoke tests do not exhaustively cover all edge cases.
+- No `.env.example` is provided; environment setup is documented above.
+
+## Security and submission notes
+
+- Never commit `.env`, credentials, database dumps, virtual environments, caches, or private generated data.
+- Keep MongoDB Atlas credentials out of documentation and command history where possible.
+- `sample_seed.py` deletes records from the `employees` and `attendance_logs` collections before loading sample data. Use it only with disposable development data.
+- The assignment excludes a Dockerfile; this project does not require one for local execution.
