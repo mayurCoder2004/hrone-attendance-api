@@ -15,7 +15,8 @@ from typing import Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from pymongo import MongoClient
+from pymongo import ASCENDING, DESCENDING, MongoClient
+from pymongo.errors import PyMongoError
 
 load_dotenv()
 
@@ -69,11 +70,43 @@ class PunchInIn(BaseModel):
 # --------------------------------------------------------------------------- #
 # Endpoints provided
 # --------------------------------------------------------------------------- #
+@app.on_event("startup")
+def create_indexes():
+    db.employees.create_index(
+        [("emp_code", ASCENDING)],
+        unique=True,
+        name="uq_employees_emp_code",
+    )
+    db.employees.create_index(
+        [("department", ASCENDING), ("emp_code", ASCENDING)],
+        name="ix_employees_department_emp_code",
+    )
+
+    db.attendance_logs.create_index(
+        [("emp_code", ASCENDING), ("date", ASCENDING)],
+        unique=True,
+        name="uq_attendance_emp_code_date",
+    )
+    db.attendance_logs.create_index(
+        [("date", DESCENDING), ("emp_code", ASCENDING)],
+        name="ix_attendance_date_emp_code",
+    )
+    db.attendance_logs.create_index(
+        [("status", ASCENDING), ("date", DESCENDING)],
+        name="ix_attendance_status_date",
+    )
+
+
 @app.get("/health")
 def health():
+    try:
+        client.admin.command("ping")
+    except PyMongoError:
+        raise HTTPException(
+            status_code=503,
+            detail="MongoDB unavailable",
+        )
     return {"status": "ok"}
-
-
 @app.post("/employees", status_code=201)
 def create_employee(body: EmployeeIn):
     if db.employees.find_one({"emp_code": body.emp_code}):
@@ -191,4 +224,5 @@ def list_attendance(
 #   GET   /analytics/departments/{department}/trend
 #   GET   /admin/explain/{endpoint}
 # --------------------------------------------------------------------------- #
+
 
