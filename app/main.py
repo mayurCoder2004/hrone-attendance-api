@@ -9,6 +9,7 @@ works, but nobody has reviewed it. Read PROBLEM_STATEMENT.docx for what is expec
 openapi.yaml for the contract and DATA_MODEL.md for what is stored in MongoDB.
 """
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -16,7 +17,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from pymongo import ASCENDING, DESCENDING, MongoClient
-from pymongo.errors import PyMongoError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
 load_dotenv()
 
@@ -109,15 +110,64 @@ def health():
     return {"status": "ok"}
 @app.post("/employees", status_code=201)
 def create_employee(body: EmployeeIn):
-    if db.employees.find_one({"emp_code": body.emp_code}):
-        raise HTTPException(409, "emp_code already exists")
+    if not re.fullmatch(r"EMP\d{4,6}", body.emp_code):
+        raise HTTPException(
+            status_code=422,
+            detail="emp_code must start with EMP followed by 4 to 6 digits",
+        )
+
+    for field_name in ("name", "email", "department"):
+        value = getattr(body, field_name)
+        if not value.strip():
+            raise HTTPException(
+                status_code=422,
+                detail=f"{field_name} must not be empty",
+            )
+
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", body.email):
+        raise HTTPException(status_code=422, detail="Invalid email format")
+
+    time_pattern = r"(?:[01]\d|2[0-3]):[0-5]\d"
+    if not re.fullmatch(time_pattern, body.shift_start):
+        raise HTTPException(
+            status_code=422,
+            detail="shift_start must use HH:MM in 24-hour format",
+        )
+    if not re.fullmatch(time_pattern, body.shift_end):
+        raise HTTPException(
+            status_code=422,
+            detail="shift_end must use HH:MM in 24-hour format",
+        )
+    if body.shift_start == body.shift_end:
+        raise HTTPException(
+            status_code=422,
+            detail="shift_start and shift_end must be different",
+        )
+
+    try:
+        joined_date = datetime.strptime(body.joined_on, "%Y-%m-%d")
+        if joined_date.strftime("%Y-%m-%d") != body.joined_on:
+            raise ValueError("Invalid date format")
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail="joined_on must be a valid date in YYYY-MM-DD format",
+        )
+
     doc = body.model_dump()
-    doc["created_at"] = datetime.now()
-    db.employees.insert_one(doc)
+    doc["created_at"] = datetime.now(timezone.utc)
+
+    try:
+        db.employees.insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(
+            status_code=409,
+            detail="emp_code already exists",
+        )
+
     doc.pop("_id", None)
+    doc["created_at"] = int(doc["created_at"].timestamp() * 1000)
     return doc
-
-
 @app.get("/employees")
 def list_employees(
     department: Optional[str] = None,
@@ -224,5 +274,6 @@ def list_attendance(
 #   GET   /analytics/departments/{department}/trend
 #   GET   /admin/explain/{endpoint}
 # --------------------------------------------------------------------------- #
+
 
 
