@@ -114,9 +114,9 @@ def to_epoch_ms(value: Optional[datetime]) -> Optional[int]:
 # --------------------------------------------------------------------------- #
 class EmployeeIn(BaseModel):
     emp_code: str
-    name: str
-    email: str
-    department: str
+    name: str = Field(..., max_length=100)
+    email: str = Field(..., max_length=120)
+    department: str = Field(..., max_length=50)
     shift_start: str = "09:30"
     shift_end: str = "18:30"
     joined_on: str
