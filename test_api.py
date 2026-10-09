@@ -1,4 +1,4 @@
-"""
+﻿"""
 Safe end-to-end smoke tests for the HROne Attendance API.
 
 Usage:
@@ -252,12 +252,15 @@ def main():
     finally:
         # Delete only records owned by this run, never seeded/sample records.
         try:
-            db.attendance_logs.delete_many({"emp_code": EMP_CODE})
-            db.employees.delete_many({"emp_code": EMP_CODE, "email": EMAIL})
-            print("\nCleanup: removed only this run's temporary test records.")
+            if created_employee:
+                db.attendance_logs.delete_many({"emp_code": EMP_CODE})
+                db.employees.delete_one({"emp_code": EMP_CODE, "email": EMAIL})
+                print("\nCleanup: removed this run's temporary test records.")
+            else:
+                print("\nCleanup skipped: this run did not create its temporary employee.")
         except Exception as exc:
             print(f"\nWARNING: cleanup failed for {EMP_CODE}: {exc}")
-            print("Remove this employee and its attendance records manually if needed.")
+            print("Check this run's temporary records manually if needed.")
         mongo.close()
 
     print(f"\nResult: {passed} passed, {failed} failed.")

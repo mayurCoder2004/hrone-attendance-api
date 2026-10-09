@@ -124,13 +124,13 @@ class EmployeeIn(BaseModel):
 
 class PunchInIn(BaseModel):
     emp_code: str
-    punched_at: Optional[int] = None
+    punched_at: Optional[StrictInt] = None
     status: str = "PRESENT"
 
 
 class PunchOutIn(BaseModel):
     emp_code: str
-    punched_at: Optional[int] = None
+    punched_at: Optional[StrictInt] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -296,10 +296,10 @@ def punch_in(body: PunchInIn):
     if body.punched_at is None:
         ts = datetime.now(timezone.utc).replace(microsecond=0)
     else:
-        if body.punched_at <= 0:
+        if not 100000000000 <= body.punched_at <= 4102444800000:
             raise HTTPException(
                 status_code=422,
-                detail="punched_at must be a positive epoch-millisecond timestamp",
+                detail="punched_at must be an epoch-millisecond timestamp between 100000000000 and 4102444800000",
             )
         try:
             ts = datetime.fromtimestamp(
@@ -356,10 +356,10 @@ def punch_out(body: PunchOutIn):
     if body.punched_at is None:
         ts = datetime.now(timezone.utc).replace(microsecond=0)
     else:
-        if body.punched_at <= 0:
+        if not 100000000000 <= body.punched_at <= 4102444800000:
             raise HTTPException(
                 status_code=422,
-                detail="punched_at must be a positive epoch-millisecond timestamp",
+                detail="punched_at must be an epoch-millisecond timestamp between 100000000000 and 4102444800000",
             )
         try:
             ts = datetime.fromtimestamp(
