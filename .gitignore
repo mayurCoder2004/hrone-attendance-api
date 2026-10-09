@@ -5,3 +5,8 @@ __pycache__/
 .env.*
 !.env.example
 .pytest_cache/
+
+# Assignment materials and sample data (keep local, don't submit)
+PROBLEM_STATEMENT.docx
+DATA_MODEL.md
+sample_data/
