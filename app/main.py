@@ -445,26 +445,82 @@ def list_attendance(
     page: int = 1,
     page_size: int = 20,
 ):
-    q = {}
-    if emp_code:
-        q["emp_code"] = emp_code
-    if date_from or date_to:
-        q["date"] = {}
-        if date_from:
-            q["date"]["$gte"] = date_from
-        if date_to:
-            q["date"]["$lte"] = date_to
-    if status:
-        q["status"] = status
-    docs = list(db.attendance_logs.find(q))
-    docs.sort(key=lambda d: d["date"], reverse=True)
-    total = len(docs)
-    page_docs = docs[(page - 1) * page_size : page * page_size]
-    for d in page_docs:
-        d["id"] = str(d.pop("_id"))
-    return {"items": page_docs, "total": total, "page": page, "page_size": page_size}
+    if page < 1:
+        raise HTTPException(
+            status_code=422,
+            detail="page must be at least 1",
+        )
 
+    if page_size < 1 or page_size > 100:
+        raise HTTPException(
+            status_code=422,
+            detail="page_size must be between 1 and 100",
+        )
 
+    for field_name, date_value in (
+        ("date_from", date_from),
+        ("date_to", date_to),
+    ):
+        if date_value is not None:
+            try:
+                parsed_date = datetime.strptime(date_value, "%Y-%m-%d")
+                if parsed_date.strftime("%Y-%m-%d") != date_value:
+                    raise ValueError("Invalid date")
+            except ValueError:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{field_name} must use YYYY-MM-DD format",
+                )
+
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(
+            status_code=422,
+            detail="date_from must be on or before date_to",
+        )
+
+    allowed_statuses = {"PRESENT", "WFH", "ON_DUTY", "ABSENT", "LEAVE"}
+    if status is not None and status not in allowed_statuses:
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid attendance status",
+        )
+
+    query = {}
+
+    if emp_code is not None:
+        query["emp_code"] = emp_code
+
+    if status is not None:
+        query["status"] = status
+
+    if date_from is not None or date_to is not None:
+        date_filter = {}
+        if date_from is not None:
+            date_filter["$gte"] = date_from
+        if date_to is not None:
+            date_filter["$lte"] = date_to
+        query["date"] = date_filter
+
+    total = db.attendance_logs.count_documents(query)
+    skip = (page - 1) * page_size
+
+    items = list(
+        db.attendance_logs.find(query, {"_id": 0})
+        .sort([("date", DESCENDING), ("emp_code", ASCENDING)])
+        .skip(skip)
+        .limit(page_size)
+    )
+
+    for item in items:
+        item["punch_in"] = to_epoch_ms(item.get("punch_in"))
+        item["punch_out"] = to_epoch_ms(item.get("punch_out"))
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 # --------------------------------------------------------------------------- #
 # TODO - the rest of the contract (see openapi.yaml):
 #   POST  /attendance/punch-out
@@ -475,6 +531,7 @@ def list_attendance(
 #   GET   /analytics/departments/{department}/trend
 #   GET   /admin/explain/{endpoint}
 # --------------------------------------------------------------------------- #
+
 
 
 
