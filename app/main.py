@@ -1103,3 +1103,88 @@ def department_summary(month: str):
         output.append(summary)
 
     return {"month": month, "departments": output}
+
+@app.get("/analytics/leaderboard/late")
+def late_leaderboard(month: str, limit: int = 10, department: Optional[str] = None):
+    try:
+        month_start = datetime.strptime(month, "%Y-%m").date()
+        if month_start.strftime("%Y-%m") != month:
+            raise ValueError("Invalid month")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="month must use YYYY-MM format")
+
+    if limit < 1 or limit > 50:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 50")
+
+    if department is not None and not department.strip():
+        raise HTTPException(status_code=422, detail="department cannot be empty")
+
+    next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    month_end = next_month - timedelta(days=1)
+
+    pipeline = [
+        {
+            "$match": {
+                "date": {
+                    "$gte": month_start.isoformat(),
+                    "$lte": month_end.isoformat(),
+                }
+            }
+        },
+        {
+            "$group": {
+                "_id": "$emp_code",
+                "total_late_minutes": {
+                    "$sum": {"$ifNull": ["$late_minutes", 0]}
+                },
+                "late_count": {
+                    "$sum": {
+                        "$cond": [
+                            {"$gt": [{"$ifNull": ["$late_minutes", 0]}, 0]},
+                            1,
+                            0,
+                        ]
+                    }
+                },
+            }
+        },
+        {"$match": {"total_late_minutes": {"$gt": 0}}},
+        {
+            "$lookup": {
+                "from": "employees",
+                "localField": "_id",
+                "foreignField": "emp_code",
+                "as": "employee",
+            }
+        },
+        {"$unwind": "$employee"},
+    ]
+
+    if department is not None:
+        pipeline.append({"$match": {"employee.department": department.strip()}})
+
+    pipeline.extend([
+        {
+            "$project": {
+                "_id": 0,
+                "emp_code": "$_id",
+                "name": "$employee.name",
+                "department": "$employee.department",
+                "total_late_minutes": 1,
+                "late_count": 1,
+            }
+        },
+        {"$sort": {"total_late_minutes": -1, "emp_code": 1}},
+        {
+            "$setWindowFields": {
+                "sortBy": {"total_late_minutes": -1},
+                "output": {"rank": {"$rank": {}}},
+            }
+        },
+        {"$match": {"rank": {"$lte": limit}}},
+        {"$sort": {"total_late_minutes": -1, "emp_code": 1}},
+    ])
+
+    items = list(db.attendance_logs.aggregate(pipeline))
+    return {"month": month, "items": items}
+
