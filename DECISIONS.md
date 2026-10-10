@@ -1,4 +1,4 @@
-﻿# DECISIONS.md
+# DECISIONS.md
 
 1. **Indexes.** I created a unique index on `employees.emp_code` to prevent duplicate employee codes, plus `(department, emp_code)` for department-filtered employee listings. On attendance, the unique `(emp_code, date)` index guarantees one record per employee per day and supports monthly employee queries. The `(date DESC, emp_code ASC)` index supports date-based attendance queries and ordering. The `(status ASC, date DESC)` index supports status-filtered attendance queries. I did not add a separate index on `status` because the compound status/date index already supports that filter.
 
@@ -8,4 +8,4 @@
 
 4. **Headcount.** The department summary starts from eligible employees whose `joined_on` is on or before the month's end. It aggregates attendance separately and combines the results, so employees with no logs still contribute to headcount.
 
-5. **100x scale.** I would benchmark with representative data and inspect execution statistics. I would then consider workload-specific indexes, pagination and aggregation costs, and caching or precomputed summaries for expensive repeated analytics.
+5. **100x scale.** I would benchmark with representative data, inspect MongoDB execution statistics, and measure latency and resource usage to identify bottlenecks. I would then tune indexes and aggregation pipelines based on observed query patterns, verify pagination costs, and consider caching or precomputed summaries for expensive repeated analytics.

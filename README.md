@@ -137,7 +137,7 @@ Attendance statuses are `PRESENT`, `WFH`, `ON_DUTY`, `ABSENT`, and `LEAVE`. Punc
 |---|---|---|
 | `GET` | `/analytics/employees/{emp_code}/monthly?month=YYYY-MM` | Monthly attendance summary for an employee. |
 | `GET` | `/analytics/departments/summary?month=YYYY-MM` | Department summary for a month. An optional `department` query parameter filters the results. |
-| `GET` | `/analytics/leaderboard/late?month=YYYY-MM` | Late-arrival leaderboard. Supports `limit` (default `10`, range `1`–`50`) and optional `department`. |
+| `GET` | `/analytics/leaderboard/late?month=YYYY-MM` | Late-arrival leaderboard. Supports `limit` (default `10`, range `1`-`50`) and optional `department`. |
 | `GET` | `/analytics/departments/{department}/trend?from=YYYY-MM-DD&to=YYYY-MM-DD` | Daily department trend for an inclusive date range of at most 92 days. |
 
 The monthly employee endpoint requires an existing employee. The department trend endpoint returns `404` for an unknown department.
@@ -268,12 +268,12 @@ Indexes are created in `app/main.py` at application startup.
 
 | Collection | Index | Purpose |
 |---|---|---|
-| `employees` | `uq_employees_emp_code` — unique `emp_code` | Enforces unique employee codes. |
-| `employees` | `ix_employees_department_emp_code` — `department`, `emp_code` | Supports department-filtered employee listing. |
-| `employees` | `ix_employees_joined_on_department` — `joined_on`, `department` | Supports employee eligibility and headcount queries. |
-| `attendance_logs` | `uq_attendance_emp_code_date` — unique `emp_code`, `date` | Enforces one attendance record per employee per date. |
-| `attendance_logs` | `ix_attendance_date_emp_code` — `date` descending, `emp_code` | Supports attendance date sorting and filtering. |
-| `attendance_logs` | `ix_attendance_status_date` — `status`, `date` descending | Supports status/date filtering. |
+| `employees` | `uq_employees_emp_code` - unique `emp_code` | Enforces unique employee codes. |
+| `employees` | `ix_employees_department_emp_code` - `department`, `emp_code` | Supports department-filtered employee listing. |
+| `employees` | `ix_employees_joined_on_department` - `joined_on`, `department` | Supports employee eligibility and headcount queries. |
+| `attendance_logs` | `uq_attendance_emp_code_date` - unique `emp_code`, `date` | Enforces one attendance record per employee per date. |
+| `attendance_logs` | `ix_attendance_date_emp_code` - `date` descending, `emp_code` | Supports attendance date sorting and filtering. |
+| `attendance_logs` | `ix_attendance_status_date` - `status`, `date` descending | Supports status/date filtering. |
 
 Important implementation choices:
 
@@ -298,13 +298,13 @@ In a second terminal, activate the virtual environment and run:
 python test_api.py
 ```
 
-The script uses the database configured by `.env` and may create temporary test records. Do not run it against production data. Review the script's output and cleanup messages. Smoke tests are not exhaustive coverage of every concurrency case, analytics edge case, date boundary, or malformed payload.
+The script uses the database configured by `.env`, creates temporary test records, and cleans up only its own records. Run it only against a disposable development or test database, never against production or shared data. Verify `MONGO_URI` and `MONGO_DB` before running it, and review the script's output and cleanup messages. Smoke tests are not exhaustive coverage of every concurrency case, analytics edge case, date boundary, or malformed payload.
 
 ## Known limitations
 
 - There is no authentication or authorization layer.
 - There is no holiday calendar; weekdays Monday through Friday are treated as working days.
-- Punch-in and punch-out validate `punched_at` as a positive integer timestamp, while regularization applies a stricter timestamp range.
+- Punch-in, punch-out, and regularization validate epoch-millisecond timestamps as strict integers within the supported range. Invalid seconds-based, floating-point, string, negative, and out-of-range values are rejected.
 - The smoke tests do not exhaustively cover all edge cases.
 - No `.env.example` is provided; environment setup is documented above.
 

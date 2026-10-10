@@ -1,4 +1,4 @@
-﻿"""
+"""
 Safe end-to-end smoke tests for the HROne Attendance API.
 
 Usage:
@@ -244,6 +244,16 @@ def main():
                       {"status": "PRESENT", "reason": "Missing record test",
                        "regularized_by": "api-smoke"})
 
+            check("Reject seconds instead of milliseconds", "POST", "/attendance/punch-in", 422,
+                  {"emp_code": EMP_CODE, "punched_at": 1783312500, "status": "PRESENT"})
+            check("Reject floating-point timestamp", "POST", "/attendance/punch-in", 422,
+                  {"emp_code": EMP_CODE, "punched_at": 1783312500000.5, "status": "PRESENT"})
+            check("Reject string timestamp", "POST", "/attendance/punch-in", 422,
+                  {"emp_code": EMP_CODE, "punched_at": "1783312500000", "status": "PRESENT"})
+            check("Reject timestamp below minimum", "POST", "/attendance/punch-in", 422,
+                  {"emp_code": EMP_CODE, "punched_at": 99999999999, "status": "PRESENT"})
+            check("Reject timestamp above maximum", "POST", "/attendance/punch-in", 422,
+                  {"emp_code": EMP_CODE, "punched_at": 4102444800001, "status": "PRESENT"})
             check("Reject negative punch timestamp", "POST", "/attendance/punch-in", 422,
                   {"emp_code": EMP_CODE, "punched_at": -1, "status": "PRESENT"})
             check("Unknown employee punch-in returns 404", "POST", "/attendance/punch-in", 404,
